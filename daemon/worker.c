@@ -490,8 +490,10 @@ static int qr_task_send(struct qr_task *task, uv_handle_t *handle, struct sockad
 	/* Send using given protocol */
 	int ret = 0;
 	if (handle->type == UV_UDP) {
-		/* Update DNS cookies data. */
-		subreq_update_cookies((uv_udp_t *) handle, addr, pkt);
+		if (knot_wire_get_qr(pkt->wire) == 0) {
+			/* Update DNS cookies data in query. */
+			subreq_update_cookies((uv_udp_t *) handle, addr, pkt);
+		}
 
 		uv_buf_t buf = { (char *)pkt->wire, pkt->size };
 		send_req->as.send.data = task;
