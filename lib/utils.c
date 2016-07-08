@@ -396,6 +396,27 @@ int kr_rrarray_add(rr_array_t *array, const knot_rrset_t *rr, knot_mm_t *pool)
 	return kr_ok();
 }
 
+int kr_ranked_rrarray_add(ranked_rr_array_t *array, const knot_rrset_t *rr,
+			  uint8_t rank, knot_mm_t *pool)
+{
+	int ret = array_reserve_mm(*array, array->len + 1, kr_memreserve, pool);
+	if (ret != 0) {
+		return kr_error(ENOMEM);
+	}
+	ranked_rr_array_entry_t *entry = mm_alloc(pool, sizeof(ranked_rr_array_entry_t));
+	if (!entry) {
+		return kr_error(ENOMEM);
+	}
+	knot_rrset_t *copy = knot_rrset_copy(rr, pool);
+	if (!copy) {
+		return kr_error(ENOMEM);
+	}
+	entry->rr = copy;
+	entry->rank = rank;
+	array_push(*array, entry);
+	return kr_ok();
+}
+
 static char *callprop(struct kr_module *module, const char *prop, const char *input, void *env)
 {
 	if (!module || !prop) {

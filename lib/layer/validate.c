@@ -34,6 +34,7 @@
 #include "lib/utils.h"
 #include "lib/defines.h"
 #include "lib/module.h"
+#include "lib/utils.h"
 
 #define DEBUG_MSG(qry, fmt...) QRDEBUG(qry, "vldr", fmt)
 
@@ -74,53 +75,10 @@ static bool pkt_has_type(const knot_pkt_t *pkt, uint16_t type)
 	return section_has_type(knot_pkt_section(pkt, KNOT_ADDITIONAL), type);
 }
 
-static int validate_rrset(const char *key, void *val, void *data)
-{
-	knot_rrset_t *rr = val;
-	kr_rrset_validation_ctx_t *vctx = data;
-	if (vctx->result != 0) {
-		return vctx->result;
-	}
-
-	return kr_rrset_validate(vctx, rr);
-}
-
 static int validate_section(kr_rrset_validation_ctx_t *vctx, knot_mm_t *pool)
 {
 	if (!vctx) {
 		return kr_error(EINVAL);
-	}
-
-	const knot_pktsection_t *sec = knot_pkt_section(vctx->pkt,
-							vctx->section_id);
-	if (!sec) {
-		return kr_ok();
-	}
-
-	int ret = kr_ok();
-
-	map_t stash = map_make();
-	stash.malloc = (map_alloc_f) mm_alloc;
-	stash.free = (map_free_f) mm_free;
-	stash.baton = pool;
-
-	/* Determine RR types contained in the section. */
-	for (unsigned i = 0; i < sec->count; ++i) {
-		const knot_rrset_t *rr = knot_pkt_rr(sec, i);
-		if (rr->type == KNOT_RRTYPE_RRSIG) {
-			continue;
-		}
-		if ((rr->type == KNOT_RRTYPE_NS) && (vctx->section_id == KNOT_AUTHORITY)) {
-			continue;
-		}
-		/* Only validate answers from current cut, records above the cut are stripped. */
-		if (!knot_dname_in(vctx->zone_name, rr->owner)) {
-			continue;
-		}
-		ret = kr_rrmap_add(&stash, rr, 0, pool);
-		if (ret != 0) {
-			goto fail;
-		}
 	}
 
 	/* Can't use qry->zone_cut.name directly, as this name can
@@ -128,18 +86,40 @@ static int validate_section(kr_rrset_validation_ctx_t *vctx, knot_mm_t *pool)
 	 */
 	vctx->zone_name = vctx->keys ? vctx->keys->owner  : NULL;
 
-	ret = map_walk(&stash, &validate_rrset, vctx);
-	if (ret != 0) {
-		return ret;
+	bool validation_failed = false;
+	int ret = 0;
+	int validation_result = 0;
+	for (unsigned i = 0; i < vctx->rrs->len; ++i) {
+		ranked_rr_array_entry_t *entry = vctx->rrs->at[i];
+		const knot_rrset_t *rr = entry->rr;
+		if (entry->rank != KR_VLDRANK_INITIAL) {
+			continue;
+		}
+		if (entry->rank != KR_VLDRANK_YIELD) {
+			continue;
+		}
+		if (rr->type == KNOT_RRTYPE_RRSIG) {
+			entry->rank = KR_VLDRANK_SECURE;
+			continue;
+		}
+		if ((rr->type == KNOT_RRTYPE_NS) && (vctx->section_id == KNOT_AUTHORITY)) {
+			entry->rank = KR_VLDRANK_SECURE;
+			continue;
+		}
+		validation_result = kr_rrset_validate(vctx, rr);
+		if (validation_result != 0) {
+			validation_failed = true;
+			ret = validation_result;
+		} else	{
+			entry->rank = KR_VLDRANK_SECURE;
+		}
 	}
-	ret = vctx->result;
-
-fail:
 	return ret;
 }
 
-static int validate_records(struct kr_query *qry, knot_pkt_t *answer, knot_mm_t *pool, bool has_nsec3)
+static int validate_records(struct kr_request *req, knot_pkt_t *answer, knot_mm_t *pool, bool has_nsec3)
 {
+	struct kr_query *qry = req->current_query;
 	if (!qry->zone_cut.key) {
 		DEBUG_MSG(qry, "<= no DNSKEY, can't validate\n");
 		return kr_error(EBADMSG);
@@ -147,6 +127,7 @@ static int validate_records(struct kr_query *qry, knot_pkt_t *answer, knot_mm_t 
 
 	kr_rrset_validation_ctx_t vctx = {
 		.pkt		= answer,
+		.rrs		= &req->answ_selected,
 		.section_id	= KNOT_ANSWER,
 		.keys		= qry->zone_cut.key,
 		.zone_name	= qry->zone_cut.name,
@@ -162,6 +143,7 @@ static int validate_records(struct kr_query *qry, knot_pkt_t *answer, knot_mm_t 
 	}
 
 	uint32_t an_flags = vctx.flags;
+	vctx.rrs	  = &req->auth_selected;
 	vctx.section_id   = KNOT_AUTHORITY;
 	/* zone_name can be changed by validate_section(), restore it */
 	vctx.zone_name	  = qry->zone_cut.name;
@@ -482,7 +464,7 @@ static int validate(knot_layer_t *ctx, knot_pkt_t *pkt)
 	/* Validate all records, fail as bogus if it doesn't match.
 	 * Do not revalidate data from cache, as it's already trusted. */
 	if (!(qry->flags & QUERY_CACHED)) {
-		ret = validate_records(qry, pkt, req->rplan.pool, has_nsec3);
+		ret = validate_records(req, pkt, req->rplan.pool, has_nsec3);
 		if (ret != 0) {
 			DEBUG_MSG(qry, "<= couldn't validate RRSIGs\n");
 			qry->flags |= QUERY_DNSSEC_BOGUS;

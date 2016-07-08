@@ -289,6 +289,15 @@ static int process_authority(knot_pkt_t *pkt, struct kr_request *req)
 		return KNOT_STATE_CONSUME;
 	}
 
+	for (unsigned i = 0; i < ns->count; ++i) {
+		const knot_rrset_t *rr = knot_pkt_rr(ns, i);
+		if (!knot_dname_in(qry->zone_cut.name, rr->owner)) {
+			continue;
+		}
+		kr_ranked_rrarray_add(&req->auth_selected, rr, KR_VLDRANK_INITIAL, &req->pool);
+	}
+
+
 #ifdef STRICT_MODE
 	/* AA, terminate resolution chain. */
 	if (knot_wire_get_aa(pkt->wire)) {
@@ -417,6 +426,7 @@ static int process_answer(knot_pkt_t *pkt, struct kr_request *req)
 			if (state == KNOT_STATE_FAIL) {
 				return state;
 			}
+			kr_ranked_rrarray_add(&req->answ_selected, rr, KR_VLDRANK_INITIAL, &req->pool);
 			/* can_follow is false, therefore QUERY_DNSSEC_WANT flag is set.
 			 * Follow cname chain only if rrsig exists. */
 			if (!can_follow && rr->type == KNOT_RRTYPE_RRSIG &&

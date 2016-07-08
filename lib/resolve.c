@@ -30,6 +30,17 @@
 
 #define DEBUG_MSG(qry, fmt...) QRDEBUG((qry), "resl",  fmt)
 
+static void remark_rrs(ranked_rr_array_t *array, uint8_t old_rank, uint8_t new_rank)
+{
+	for (unsigned i = 0; i < array->len; ++i) {
+		ranked_rr_array_entry_t *entry = array->at[i];
+		if (entry->rank == old_rank) {
+			entry->rank = new_rank;
+		}
+	}
+}
+
+
 /**
  * @internal Defer execution of current query.
  * The current layer state and input will be pushed to a stack and resumed on next iteration.
@@ -46,6 +57,8 @@ static int consume_yield(knot_layer_t *ctx, knot_pkt_t *pkt)
 		pickle->pkt = pkt_copy;
 		pickle->next = qry->deferred;
 		qry->deferred = pickle;
+		remark_rrs(&req->answ_selected,KR_VLDRANK_INITIAL,KR_VLDRANK_YIELD);
+		remark_rrs(&req->auth_selected,KR_VLDRANK_INITIAL,KR_VLDRANK_YIELD);
 		return kr_ok();
 	}
 	return kr_error(ENOMEM);
@@ -372,6 +385,8 @@ int kr_resolve_begin(struct kr_request *request, struct kr_context *ctx, knot_pk
 	request->current_query = NULL;
 	array_init(request->authority);
 	array_init(request->additional);
+	array_init(request->answ_selected);
+	array_init(request->auth_selected);
 
 	/* Expect first query */
 	kr_rplan_init(&request->rplan, request, &request->pool);
@@ -666,6 +681,8 @@ int kr_resolve_produce(struct kr_request *request, struct sockaddr **dst, int *t
 		DEBUG_MSG(qry, "=> resuming yielded answer\n");
 		struct kr_layer_pickle *pickle = qry->deferred;
 		request->state = KNOT_STATE_YIELD;
+		remark_rrs(&request->answ_selected,KR_VLDRANK_YIELD,KR_VLDRANK_INITIAL);
+		remark_rrs(&request->auth_selected,KR_VLDRANK_YIELD,KR_VLDRANK_INITIAL);
 		RESUME_LAYERS(layer_id(request, pickle->api), request, qry, consume, pickle->pkt);
 		qry->deferred = pickle->next;
 	} else {
